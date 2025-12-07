@@ -1,6 +1,6 @@
 streamlit
 plotly
 pandas
+matplotlib
 numpy
 fpdf
-kaleido==0.2.1

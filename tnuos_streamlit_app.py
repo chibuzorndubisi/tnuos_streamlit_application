@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
+import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 from fpdf import FPDF
-import base64
 import tempfile
 
 # Import custom modules
@@ -38,7 +38,7 @@ ZONE_COORDS = {
 
 # HELPER FUNCTIONS
 
-def create_pdf_report(summary_stats, opportunities_df, fig_wf, fig_traj):
+def create_pdf_report(summary_stats, opportunities_df, df_waterfall_data, trend_data):
     """Generates a PDF summary of the risk analysis."""
     pdf = FPDF()
     pdf.add_page()
@@ -67,39 +67,85 @@ def create_pdf_report(summary_stats, opportunities_df, fig_wf, fig_traj):
 
     pdf.ln(5)
 
-    # Charts
+    # Charts Section
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(200, 10, txt="Impact Charts: Cost Waterfall & Cost Trajectory", ln=1)
 
-    # Save Plotly figures to temporary images
+    # Create temp files
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_wf, \
             tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_traj:
 
-        print_style = dict(
-            template="plotly_white",  # Standard white theme
-            font=dict(color="black", size=10),  # Force black text
-            paper_bgcolor="white",  # Force white background
-            plot_bgcolor="white",
-            margin=dict(l=50, r=20, t=40, b=50)  # Increase margins so axes aren't cut off
-        )
+        # a. Cost Waterfall Chart
+        wf_labels = ["2025/26", "Residual", "Locational", "2026/27"]
+        wf_values = df_waterfall_data
 
-        fig_wf.update_layout(**print_style)
-        fig_traj.update_layout(**print_style)
+        # Calculate 'bottoms'
+        bottoms = [0, wf_values[0], wf_values[0] + wf_values[1], 0]
+        colors = ['#0B5394', '#FF4B4B', '#FF4B4B', '#0B5394']
 
-        # Write images using Kaleido
-        fig_wf.write_image(tmp_wf.name, width=500, height=400, scale=2)
-        fig_traj.write_image(tmp_traj.name, width=500, height=400, scale=2)
+        # Use Object-Oriented API for better control
+        fig, ax = plt.subplots(figsize=(5, 4))
 
-        # Calculate positions for side-by-side layout (A4 is ~210mm wide)
+        bars = ax.bar(wf_labels, wf_values, bottom=bottoms, color=colors)
+        ax.set_title("Cost Waterfall", fontsize=10)
+        ax.set_ylabel("Cost (£)")
+        ax.grid(axis='y', linestyle='--', alpha=0.5)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+
+        # Calculate the highest point in the chart to set Y-limits
+        # To create extra headroom for the labels so they don't get cut off
+        max_height = max([b + v for b, v in zip(bottoms, wf_values)])
+        ax.set_ylim(0, max_height * 1.15)  # Add 15% headroom
+
+        # Set labels above bars in black
+        for i, (v, b) in enumerate(zip(wf_values, bottoms)):
+            # Calculate the top of the visible bar
+            bar_top = b + v
+
+            # Label Text
+            if i in [1, 2]:  # Diffs
+                label = f"+£{v / 1000:.1f}k"
+            else:  # Totals
+                label = f"£{v / 1000:.1f}k"
+
+            # Place text slightly above the bar_top
+            ax.text(i, bar_top + (max_height * 0.02), label,
+                    ha='center', va='bottom', color='black', fontweight='bold', fontsize=8)
+
+        # Save and close
+        plt.savefig(tmp_wf.name, format='png', dpi=100, bbox_inches='tight')
+        plt.close(fig)
+
+        # b. Cost Trajectory Chart
+        years = list(trend_data.keys())
+        costs = list(trend_data.values())
+
+        fig, ax = plt.subplots(figsize=(5, 4))
+
+        if years and costs:
+            ax.plot(years, costs, marker='o', color='#FF4B4B', linewidth=2)
+        else:
+            ax.text(0.5, 0.5, "No Data Available", ha='center')
+
+        ax.set_title("Cost Trajectory", fontsize=10)
+        ax.set_xlabel("Financial Year")
+        ax.set_ylabel("TNUoS Cost (£)")
+        ax.grid(True, linestyle='--', alpha=0.5)
+
+        # Set x-axis to use the string labels
+        ax.set_xticks(range(len(years)))
+        ax.set_xticklabels(years, rotation=45)
+
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+
+        # Save and close
+        plt.savefig(tmp_traj.name, format='png', dpi=100, bbox_inches='tight')
+        plt.close(fig)
+
+        # Embed in PDF
         y_pos = pdf.get_y()
-
-        # Image 1: Waterfall (Left) - x=10
         pdf.image(tmp_wf.name, x=10, y=y_pos, w=90)
-
-        # Image 2: Trajectory (Right) - x=105
         pdf.image(tmp_traj.name, x=105, y=y_pos, w=90)
-
-        # Move cursor down below images (height approx 75mm based on w=90 aspect ratio)
         pdf.ln(80)
 
     # Opportunities
@@ -108,7 +154,7 @@ def create_pdf_report(summary_stats, opportunities_df, fig_wf, fig_traj):
     pdf.set_font("Arial", size=10)
 
     if not opportunities_df.empty:
-        # We iterate through the standardized columns we created in ScenarioModeler
+        # Iterate through the standardized columns created in ScenarioModeler
         for index, row in opportunities_df.iterrows():
             line = f"Site: {row['Site ID']} | Reduce by {row['Reduction Needed']} to drop band."
             pdf.cell(200, 8, txt=line, ln=1)
@@ -328,7 +374,6 @@ elif analysis_mode == "Portfolio":
     csv = dummy.to_csv(index=False).encode('utf-8')
 
     # File uploader & controls
-    # We use columns to keep the UI clean: Uploader on left, Actions on right
     col_up, col_act = st.columns([2, 1])
 
     with col_up:
@@ -340,7 +385,7 @@ elif analysis_mode == "Portfolio":
         # Button 1: Download
         st.download_button("⬇️ Download sample", csv, "portfolio_template.csv", "text/csv", use_container_width=True)
 
-        # Button 2: Load Example (The Feature you asked for)
+        # Button 2: Load sample
         if st.button("⚡ Load sample directly", use_container_width=True):
             st.session_state['portfolio_data'] = dummy
             st.session_state['data_source'] = 'example'
@@ -367,8 +412,7 @@ elif analysis_mode == "Portfolio":
             df_2026 = calculate_portfolio_impact(df_sites, target_year=2026)
             df_2027 = calculate_portfolio_impact(df_sites, target_year=2027)
 
-
-        # Calculate Deltas
+        # Calculate deltas
         total_2026 = df_2026['total_tnuos_cost'].sum()
         total_2027 = df_2027['total_tnuos_cost'].sum()
 
@@ -378,8 +422,8 @@ elif analysis_mode == "Portfolio":
         kpi2.metric("2025/26 Baseline cost", f"£{total_2026:,.0f}")
         kpi3.metric("2026/27 Forecast cost", f"£{total_2027:,.0f}", delta=f"{((total_2027-total_2026)/total_2026)*100:.1f}%", delta_color="inverse")
 
-        # Count >100% Increases (Risk Score)
-        # We compare 2026/27 unshielded vs 2025/26 to find structural risk, regardless of contract
+        # Count >100% Increases (high risk)
+        # We compare 2026/27 vs 2025/26 to find high risk sites
         risk_df = df_2027.copy()
         risk_df['cost_2026'] = df_2026['total_tnuos_cost']
         risk_df['pct_change'] = ((risk_df['total_tnuos_cost'] - risk_df['cost_2026']) / risk_df['cost_2026']) * 100
@@ -403,6 +447,24 @@ elif analysis_mode == "Portfolio":
                     }
                 )
 
+        # Initialize storage for the trend graph
+        trend_data_portfolio = {}
+        years_x = []
+        costs_y = []
+
+        # Loop from Baseline (2025/26) to the max available forecast (2030/31)
+        with st.spinner("Running pricing engines..."):
+            for yrs in range(2026, 2032):
+                res_portfolio = calculate_portfolio_impact(df_sites.copy(), target_year=yrs)
+                cost_portfolio = res_portfolio['total_tnuos_cost'].sum()
+
+                # Format year label (e.g., 2026 -> "2025/26")
+                label = f"{yrs - 1}/{str(yrs)[-2:]}"
+                trend_data_portfolio[label] = cost_portfolio
+
+                years_x.append(label)
+                costs_y.append(cost_portfolio)
+
         col1, col2 = st.columns(2)
 
         with col1:
@@ -410,9 +472,12 @@ elif analysis_mode == "Portfolio":
             st.subheader("Cost Waterfall (2025/26 - 2026/27)")
 
             # Prepare Data for Waterfall
-            # Steps: 2025 Base -> Residual Price Rise -> Locational Change -> 2026 Total
+            # 2025 Base -> Residual Price Rise -> Locational Change -> 2026 Total
             res_diff = df_2027['residual_cost_pound'].sum() - df_2026['residual_cost_pound'].sum()
             loc_diff = df_2027['locational_cost_pound'].sum() - df_2026['locational_cost_pound'].sum()
+
+            # Prepare list for PDF
+            waterfall_data_list = [total_2026, res_diff, loc_diff, total_2027]
 
             fig_waterfall = go.Figure(go.Waterfall(
                 name = "20", orientation = "v",
@@ -422,7 +487,6 @@ elif analysis_mode == "Portfolio":
                 text = [f"£{total_2026/1000:.1f}k", f" +£{res_diff/1000:.1f}k", f" +£{loc_diff/1000:.1f}k", f"£{total_2027/1000:.1f}k"],
                 y = [total_2026, res_diff, loc_diff, total_2027],
                 connector = {"line":{"color":"rgb(63, 63, 63)"}},
-
                 # Color for "relative" increases (middle blocks)
                 increasing={"marker": {"color": "#FF4B4B"}},
                 # Color for "relative" decreases (good practice to define, even if unused)
@@ -436,22 +500,6 @@ elif analysis_mode == "Portfolio":
         with col2:
             # Cost Trajectory Graph
             st.subheader("Cost Trajectory (2025/26–2030/31)")
-
-            # Initialize storage for the trend graph
-            trend_data_portfolio = {}
-            years_x = []
-            costs_y = []
-
-            # Loop from Baseline (2025/26) to the max available forecast (2030/31)
-            with st.spinner("Running pricing engines..."):
-                for yrs in range(2026, 2032):
-                    res_portfolio = calculate_portfolio_impact(df_sites.copy(), target_year=yrs)
-                    cost_portfolio = res_portfolio['total_tnuos_cost'].sum()
-
-                    # Format year label (e.g., 2026 -> "2025/26")
-                    label = f"{yrs - 1}/{str(yrs)[-2:]}"
-                    years_x.append(label)
-                    costs_y.append(cost_portfolio)
 
             # Create Plotly Figure
             fig_trajectory = go.Figure()
@@ -522,8 +570,19 @@ elif analysis_mode == "Portfolio":
                 mod = ScenarioModeler(df_sites, year=2026)
                 opps = mod.identify_band_drop_opportunities()
 
-                pdf_bytes = create_pdf_report(stats, opps, fig_waterfall, fig_trajectory)
+                # Prepare Data for Waterfall (Pass pure numbers, not the figure)
+                wf_start = total_2026
+                wf_diff1 = res_diff
+                wf_diff2 = loc_diff
+                wf_end = total_2027
+                waterfall_data_list = [wf_start, wf_diff1, wf_diff2, wf_end]
 
-                b64 = base64.b64encode(pdf_bytes).decode()
-                href = f'<a href="data:application/octet-stream;base64,{b64}" download="TNUoS_Risk_Report.pdf">Download PDF Report</a>'
-                st.markdown(href, unsafe_allow_html=True)
+                # Call the function
+                pdf_bytes = create_pdf_report(stats, opps, waterfall_data_list, trend_data_portfolio)
+
+                st.download_button(
+                    label="📄 Download PDF Report",
+                    data=pdf_bytes,
+                    file_name="tnuos_risk_report.pdf",
+                    mime="application/pdf"
+                )
