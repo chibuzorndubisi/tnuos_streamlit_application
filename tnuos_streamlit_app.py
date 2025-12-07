@@ -4,10 +4,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from fpdf import FPDF
 import base64
-from io import BytesIO
+import tempfile
 
-# Import our custom modules (Phase 2 & 3)
-from tnuos_engine import calculate_portfolio_impact, determine_tcr_band
+# Import custom modules
+from tnuos_engine import calculate_portfolio_impact
 from scenario_manager import ScenarioModeler
 
 # CONFIG & ASSETS
@@ -38,7 +38,7 @@ ZONE_COORDS = {
 
 # HELPER FUNCTIONS
 
-def create_pdf_report(summary_stats, opportunities_df):
+def create_pdf_report(summary_stats, opportunities_df, fig_wf, fig_traj):
     """Generates a PDF summary of the risk analysis."""
     pdf = FPDF()
     pdf.add_page()
@@ -46,12 +46,12 @@ def create_pdf_report(summary_stats, opportunities_df):
 
     # Title
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(200, 10, txt="TNUoS Risk Assessment", ln=1, align='C')
+    pdf.cell(200, 10, txt="TNUoS Impact Assessment: Executive Summary", ln=1, align='C')
     pdf.ln(10)
 
-    # Executive Summary
+    # Analytics
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(200, 10, txt="Portfolio Analytics: Executive Summary", ln=1)
+    pdf.cell(200, 10, txt=f"Portfolio Analytics: {len(df_sites)} Sites", ln=1)
     pdf.set_font("Arial", size=11)
 
     baseline = summary_stats['baseline_cost']
@@ -60,26 +60,57 @@ def create_pdf_report(summary_stats, opportunities_df):
     # Avoid division by zero error if baseline is 0
     pct = (increase / baseline * 100) if baseline > 0 else 0
 
-    pdf.cell(200, 8, txt=f"Baseline Portfolio Cost, 2025/26: GBP {baseline:,.2f}", ln=1)
-    pdf.cell(200, 8, txt=f"Forecast Portfolio Cost, 2026/27: GBP {forecast:,.2f}", ln=1)
-    pdf.cell(200, 8, txt=f"Net Increase: GBP {increase:,.2f} (+{pct:.1f}%)", ln=1)
-    pdf.cell(200, 8, txt=f"Sites Flagged 'Critical Risk' (>100% Rise): {summary_stats['high_risk_count']}", ln=1)
+    pdf.cell(200, 8, txt=f"Baseline Portfolio Cost, 2025/26: £{baseline:,.2f}", ln=1)
+    pdf.cell(200, 8, txt=f"Forecast Portfolio Cost, 2026/27: £{forecast:,.2f}", ln=1)
+    pdf.cell(200, 8, txt=f"Net Increase: £{increase:,.2f} (+{pct:.1f}%)", ln=1)
+    pdf.cell(200, 8, txt=f"Number of High Risk Sites (>100% Rise): {summary_stats['high_risk_count']}", ln=1)
 
-    pdf.ln(10)
+    pdf.ln(5)
+
+    # Charts
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(200, 10, txt="Impact Charts: Cost Waterfall & Cost Trajectory", ln=1)
+
+    # Save Plotly figures to temporary images
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_wf, \
+            tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_traj:
+
+        print_style = dict(
+            template="plotly_white",  # Standard white theme
+            font=dict(color="black", size=10),  # Force black text
+            paper_bgcolor="white",  # Force white background
+            plot_bgcolor="white",
+            margin=dict(l=50, r=20, t=40, b=50)  # Increase margins so axes aren't cut off
+        )
+
+        fig_wf.update_layout(**print_style)
+        fig_traj.update_layout(**print_style)
+
+        # Write images using Kaleido
+        fig_wf.write_image(tmp_wf.name, width=500, height=400, scale=2)
+        fig_traj.write_image(tmp_traj.name, width=500, height=400, scale=2)
+
+        # Calculate positions for side-by-side layout (A4 is ~210mm wide)
+        y_pos = pdf.get_y()
+
+        # Image 1: Waterfall (Left) - x=10
+        pdf.image(tmp_wf.name, x=10, y=y_pos, w=90)
+
+        # Image 2: Trajectory (Right) - x=105
+        pdf.image(tmp_traj.name, x=105, y=y_pos, w=90)
+
+        # Move cursor down below images (height approx 75mm based on w=90 aspect ratio)
+        pdf.ln(80)
 
     # Opportunities
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(200, 10, txt="Optimisation Opportunities (Band Drops)", ln=1)
+    pdf.cell(200, 10, txt="Optimisation Opportunities: Band Drops", ln=1)
     pdf.set_font("Arial", size=10)
 
     if not opportunities_df.empty:
         # We iterate through the standardized columns we created in ScenarioModeler
         for index, row in opportunities_df.iterrows():
-            # MATCHING THE NEW COLUMN NAMES:
-            # 'Site ID' instead of 'site_id'
-            # 'Reduction Needed' instead of 'reduction_kVA'
-
-            line = f"Site: {row['Site ID']} | Reduce by {row['Reduction Needed']} to drop Band."
+            line = f"Site: {row['Site ID']} | Reduce by {row['Reduction Needed']} to drop band."
             pdf.cell(200, 8, txt=line, ln=1)
     else:
         pdf.cell(200, 8, txt="No TCR band drop opportunity found within a 20% reduction threshold for this portfolio.", ln=1)
@@ -89,12 +120,12 @@ def create_pdf_report(summary_stats, opportunities_df):
 # UI LAYOUT
 
 st.title("TNUoS Impact Calculator")
-st.markdown("### A strategic non-commodity pricing & forecasting tool")
+st.markdown("### A strategic non-commodity pricing & forecasting tool for pass-through contracts.")
 
 # Sidebar for global controls
 with st.sidebar:
     st.header("Project Controls")
-    analysis_mode = st.radio("Select Module:", ["Single Site Analytics", "Portfolio Analytics"])
+    analysis_mode = st.radio("Select Type:", ["Single Site", "Portfolio"])
 
     st.info("""
     **Context:**
@@ -105,7 +136,7 @@ with st.sidebar:
 # MODULE 1: SINGLE SITE CALCULATOR
 
 # Quick quote calculation
-if analysis_mode == "Single Site Analytics":
+if analysis_mode == "Single Site":
     st.subheader("Quick Quote: Single Site Impact")
 
     # Inputs
@@ -198,7 +229,7 @@ if analysis_mode == "Single Site Analytics":
 
         # Optimization Engine (Static Check)
 
-        st.write("**Optimization Opportunities: Band Management**")
+        st.write("**Optimisation Opportunities: Band Drops**")
 
         calculation_year = s_target_year
 
@@ -207,7 +238,7 @@ if analysis_mode == "Single Site Analytics":
         opportunities = modeler.identify_band_drop_opportunities()
 
         if not opportunities.empty:
-            st.success(f"Opportunity to to drop a lower TCR Band with <20% capacity reduction.")
+            st.success(f"Opportunity to drop to a lower TCR Band with <20% capacity reduction.")
             st.dataframe(opportunities, use_container_width=True)
         else:
             st.caption(
@@ -280,7 +311,7 @@ if analysis_mode == "Single Site Analytics":
 
 # MODULE 2: PORTFOLIO CALCULATOR
 
-elif analysis_mode == "Portfolio Analytics":
+elif analysis_mode == "Portfolio":
     st.subheader("Portfolio Risk Dashboard")
 
     # Generate dummy data
@@ -331,12 +362,6 @@ elif analysis_mode == "Portfolio Analytics":
     if df_sites is not None:
         st.success(f"Successfully loaded {len(df_sites)} sites.")
 
-        # Scenario Toggle: Fixed vs Pass-Through
-        st.divider()
-        col_t1, col_t2 = st.columns([1, 2])
-        with col_t1:
-            contract_type = st.radio("Contract Structure", ["Pass-Through (Exposure)", "Fixed (Shielded)"])
-
         # Calculation
         with st.spinner('Running Calculation Engine...'):
             df_2026 = calculate_portfolio_impact(df_sites, target_year=2026)
@@ -347,26 +372,11 @@ elif analysis_mode == "Portfolio Analytics":
         total_2026 = df_2026['total_tnuos_cost'].sum()
         total_2027 = df_2027['total_tnuos_cost'].sum()
 
-        # Apply Fixed Contract Logic
-        if contract_type == "Fixed (Shielded)":
-            # If fixed, the 'Cost to Customer' in 2026/27 remains at 2025/26 levels (simplified)
-            # The 'Exposure' is hidden.
-            # Apply a 15% markup from the pass-through (marked to market) cost
-            display_total_2026 = total_2026 * 1.15
-            display_total_2027 = total_2026 * 1.15
-            delta_msg = "Shielded (No Change)"
-            delta_val = 0
-        else:
-            display_total_2026 = total_2026
-            display_total_2027 = total_2027
-            delta_msg = "Direct Exposure"
-            delta_val = total_2027 - total_2026
-
         # KPI row
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         kpi1.metric("Sites Analyzed", len(df_sites))
-        kpi2.metric("2025/26 Baseline cost", f"£{display_total_2026:,.0f}")
-        kpi3.metric("2026/27 Forecast cost", f"£{display_total_2027:,.0f}", delta=f"{((display_total_2027-display_total_2026)/display_total_2026)*100:.1f}%", delta_color="inverse")
+        kpi2.metric("2025/26 Baseline cost", f"£{total_2026:,.0f}")
+        kpi3.metric("2026/27 Forecast cost", f"£{total_2027:,.0f}", delta=f"{((total_2027-total_2026)/total_2026)*100:.1f}%", delta_color="inverse")
 
         # Count >100% Increases (Risk Score)
         # We compare 2026/27 unshielded vs 2025/26 to find structural risk, regardless of contract
@@ -406,19 +416,31 @@ elif analysis_mode == "Portfolio Analytics":
 
             fig_waterfall = go.Figure(go.Waterfall(
                 name = "20", orientation = "v",
-                measure = ["relative", "relative", "relative", "total"],
+                measure = ["absolute", "relative", "relative", "total"],
                 x = ["2025/26 Baseline", "Fixed Residual Hike", "Locational Increase", "2026/27 Forecast"],
                 textposition = "outside",
                 text = [f"£{total_2026/1000:.1f}k", f" +£{res_diff/1000:.1f}k", f" +£{loc_diff/1000:.1f}k", f"£{total_2027/1000:.1f}k"],
                 y = [total_2026, res_diff, loc_diff, total_2027],
                 connector = {"line":{"color":"rgb(63, 63, 63)"}},
+
+                # Color for "relative" increases (middle blocks)
+                increasing={"marker": {"color": "#FF4B4B"}},
+                # Color for "relative" decreases (good practice to define, even if unused)
+                decreasing={"marker": {"color": "#38761D"}},
+                # Color for "total" or starting blocks (first and last blocks)
+                totals={"marker": {"color": "#0B5394"}},
             ))
+            fig_waterfall.update_layout(margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig_waterfall, use_container_width=True)
 
         with col2:
             # Cost Trajectory Graph
+            st.subheader("Cost Trajectory (2025/26–2030/31)")
+
             # Initialize storage for the trend graph
             trend_data_portfolio = {}
+            years_x = []
+            costs_y = []
 
             # Loop from Baseline (2025/26) to the max available forecast (2030/31)
             with st.spinner("Running pricing engines..."):
@@ -428,21 +450,29 @@ elif analysis_mode == "Portfolio Analytics":
 
                     # Format year label (e.g., 2026 -> "2025/26")
                     label = f"{yrs - 1}/{str(yrs)[-2:]}"
-                    trend_data_portfolio[label] = cost_portfolio
+                    years_x.append(label)
+                    costs_y.append(cost_portfolio)
 
-            # Output chart
-            st.markdown("### Cost Trajectory (2025/26–2030/31)")
-
-            # Convert dict to DataFrame for Streamlit charting
-            chart_portfolio_df = pd.DataFrame.from_dict(trend_data_portfolio, orient='index',
-                                                        columns=['Total TNUoS Cost (£)'])
-
-            st.line_chart(chart_portfolio_df, color="#FF4B4B")
+            # Create Plotly Figure
+            fig_trajectory = go.Figure()
+            fig_trajectory.add_trace(go.Scatter(
+                x=years_x,
+                y=costs_y,
+                mode='lines+markers',
+                line=dict(color='#FF4B4B', width=3),
+                marker=dict(size=8)
+            ))
+            fig_trajectory.update_layout(
+                margin=dict(l=0, r=0, t=30, b=0),
+                xaxis_title="Year",
+                yaxis_title="Cost (£)"
+            )
+            st.plotly_chart(fig_trajectory, use_container_width=True)
 
         st.divider()
 
-        # --- TABS FOR DEEP DIVE ---
-        tab1, tab2, tab3 = st.tabs(["🌍 Geographic Map", "📉 Band Optimization", "📑 Reports"])
+        # TABS FOR DEEP DIVE
+        tab1, tab2, tab3 = st.tabs(["🌍 Geographic Map", "📉 Band Optimisation", "📑 PDF Report"])
 
         with tab1:
             st.markdown("### Regional Exposure Heatmap")
@@ -472,27 +502,27 @@ elif analysis_mode == "Portfolio Analytics":
             opportunities = modeler.identify_band_drop_opportunities()
 
             if not opportunities.empty:
-                st.success(f"Found {len(opportunities)} opportunities to to drop a lower TCR Band with <20% capacity reduction.")
+                st.success(f"Found {len(opportunities)} opportunities to drop to a lower TCR Band with <20% capacity reduction.")
                 st.dataframe(opportunities)
             else:
                 st.info("No TCR band drop opportunity found within a 20% reduction threshold for this portfolio.")
 
         with tab3:
-            st.markdown("### Export Reports")
+            st.markdown("### Export Summary of Analysis")
 
             # Generate PDF
-            if st.button("Generate Executive Summary PDF"):
+            if st.button("Generate PDF Report"):
                 # Prepare summary stats
                 stats = {
-                    'baseline_cost': display_total_2026,
-                    'forecast_cost': display_total_2027,
+                    'baseline_cost': total_2026,
+                    'forecast_cost': total_2027,
                     'high_risk_count': high_risk_count
                 }
                 # Use modeler to get opps for the report
                 mod = ScenarioModeler(df_sites, year=2026)
                 opps = mod.identify_band_drop_opportunities()
 
-                pdf_bytes = create_pdf_report(stats, opps)
+                pdf_bytes = create_pdf_report(stats, opps, fig_waterfall, fig_trajectory)
 
                 b64 = base64.b64encode(pdf_bytes).decode()
                 href = f'<a href="data:application/octet-stream;base64,{b64}" download="TNUoS_Risk_Report.pdf">Download PDF Report</a>'
