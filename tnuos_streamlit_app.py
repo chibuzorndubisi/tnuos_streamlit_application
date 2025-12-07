@@ -8,7 +8,7 @@ from io import BytesIO
 
 # Import our custom modules (Phase 2 & 3)
 from tnuos_engine import calculate_portfolio_impact, determine_tcr_band
-from scenario_manager2 import ScenarioModeler2
+from scenario_manager import ScenarioModeler
 
 # CONFIG & ASSETS
 
@@ -203,7 +203,7 @@ if analysis_mode == "Single Site Analytics":
         calculation_year = s_target_year
 
         # Initialize Modeler with the Single Site data and the correct calculation year
-        modeler = ScenarioModeler2(single_site, year=calculation_year)
+        modeler = ScenarioModeler(single_site, year=calculation_year)
         opportunities = modeler.identify_band_drop_opportunities()
 
         if not opportunities.empty:
@@ -468,7 +468,7 @@ elif analysis_mode == "Portfolio Analytics":
 
         with tab2:
             st.markdown("### Optimisation Opportunities")
-            modeler = ScenarioModeler2(df_sites, year=2026)
+            modeler = ScenarioModeler(df_sites, year=2026)
             opportunities = modeler.identify_band_drop_opportunities()
 
             if not opportunities.empty:
@@ -489,7 +489,7 @@ elif analysis_mode == "Portfolio Analytics":
                     'high_risk_count': high_risk_count
                 }
                 # Use modeler to get opps for the report
-                mod = ScenarioModeler2(df_sites, year=2026)
+                mod = ScenarioModeler(df_sites, year=2026)
                 opps = mod.identify_band_drop_opportunities()
 
                 pdf_bytes = create_pdf_report(stats, opps)

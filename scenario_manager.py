@@ -4,7 +4,7 @@ import copy
 # Import the engine we built in Phase 2
 from tnuos_engine import calculate_portfolio_impact, determine_tcr_band
 
-class ScenarioModeler2:
+class ScenarioModeler:
     def __init__(self, sites_df, year):
         self.baseline_sites = sites_df.copy()
         self.year = year
